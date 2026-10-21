@@ -112,10 +112,15 @@ def compare_frames(kbart_df, purchase_df, isbn_column, drop_serials=True):
     print_isbns = normalize_isbn(kbart_df["print_identifier"])
     kbart_isbns = set(online_isbns.unique()).union(set(print_isbns.unique()))
 
-    filtered = kbart_df[
-        normalize_isbn(kbart_df["online_identifier"]).isin(purchase_isbns)
-        | normalize_isbn(kbart_df["print_identifier"]).isin(purchase_isbns)
-    ]
+    online_matches = normalize_isbn(kbart_df["online_identifier"]).isin(
+        purchase_isbns).reindex(kbart_df.index, fill_value=False)
+    print_matches = normalize_isbn(kbart_df["print_identifier"]).isin(
+        purchase_isbns).reindex(kbart_df.index, fill_value=False)
+    filtered = kbart_df[online_matches | print_matches].copy()
+
+    for column in REQUIRED_KBART_COLUMNS:
+        filtered[column] = filtered[column].astype("string").str.replace(
+            ".0", "", regex=False)
 
     missing = [
         str(isbn)
@@ -136,6 +141,13 @@ def format_number(value):
         str: Zahl als Text, zum Beispiel "3.482".
     """
     return f"{value:,}".replace(",", ".")
+
+
+def display_value(value):
+    """Formatiert leere Tabellenwerte als gut lesbaren Platzhalter."""
+    if pd.isna(value):
+        return "-"
+    return str(value)
 
 
 def human_size(path):
@@ -673,10 +685,10 @@ class KarmaApp(ctk.CTk):
         spalten = [c for c in PREVIEW_COLUMNS if c in treffer.columns]
         for _, zeile in treffer.head(PREVIEW_LIMIT).iterrows():
             self.hits_tree.insert("", "end", values=(
-                str(zeile.get("publication_title", "")),
-                str(zeile.get("print_identifier", "")),
-                str(zeile.get("online_identifier", "")),
-                str(zeile.get("publication_type", "")),
+                display_value(zeile.get("publication_title", "")),
+                display_value(zeile.get("print_identifier", "")),
+                display_value(zeile.get("online_identifier", "")),
+                display_value(zeile.get("publication_type", "")),
             ))
 
         self.missing_tree.delete(*self.missing_tree.get_children())
