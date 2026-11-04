@@ -88,6 +88,22 @@ def test_cleaned_purchase_file_reports_wiki_line_numbers():
     assert result.missing["Zeilennummer_Kaufdatei"].tolist() == [44, 67, 276, 282]
 
 
+def test_unfiltered_purchase_file_notes():
+    """UC-08: Die beiden Ocu-Titel der Kaufdatei werden gemeldet."""
+    notes = run(CURRENT).notes
+    assert notes["Zeilennummer_Kaufdatei"].tolist() == [147, 264]
+    assert notes["Hinweis"].tolist() == [
+        "Ocu: ISBN nicht in der KBART gefunden",
+        "Prüfen: leere ISBN, Ocu oder bestellt? (BBG: Ocu)",
+    ]
+
+
+@pytest.mark.skipif(not PURCHASE_283.exists(), reason="283er-Kaufdatei fehlt")
+def test_cleaned_purchase_file_has_no_notes():
+    """UC-08: Nach der Bereinigung von Hand gibt es keine Hinweise mehr."""
+    assert run(CURRENT, PURCHASE_283).notes.empty
+
+
 def test_all_lines_of_biblioscout_are_read():
     """Anführungszeichen in Titeln dürfen keine Zeilen verschlucken."""
     assert len(load_kbart(BIBLIOSCOUT)) == 4617

@@ -112,6 +112,54 @@ def test_hit_rate_without_isbn_is_zero():
     assert hit_rate(compare_frames(data, purchase, ["ISBN"])) == 0
 
 
+def notes_for(purchase, columns=("ISBN",), kbart_isbn="9781111111111"):
+    """Gleicht eine Titelliste ab und liefert ihre Hinweise als Listen."""
+    data = kbart(["A", kbart_isbn, "", "Book"])
+    return compare_frames(data, pd.DataFrame(purchase), list(columns)).notes.values.tolist()
+
+
+def test_row_without_any_isbn_gets_the_wiki_note():
+    """UC-08: Ohne ISBN in allen Spalten erscheint die Meldung aus dem Testfall."""
+    notes = notes_for({"Titel+Zusatz": ["Altdaten"], "ISBN": [None], "ISBN_1": [None]},
+                      ("ISBN", "ISBN_1"))
+    assert notes == [[2, "Altdaten", "Prüfen: leere ISBN, Ocu oder bestellt?"]]
+
+
+def test_empty_row_note_names_the_ocu_code():
+    """UC-08: Bei leerer ISBN wird die vorhandene Gattung mit ausgegeben."""
+    notes = notes_for({"Titel+Zusatz": ["T"], "ISBN": [None], "BBG": ["Ocu"]})
+    assert notes == [[2, "T", "Prüfen: leere ISBN, Ocu oder bestellt? (BBG: Ocu)"]]
+
+
+def test_any_filled_isbn_column_prevents_the_empty_note():
+    """UC-08: Eine gefüllte ISBN-Spalte genügt, auch wenn sie nicht gewählt ist."""
+    notes = notes_for({"Titel+Zusatz": ["T"], "ISBN": [None], "ISBN_2": ["9781111111111"]})
+    assert notes == []
+
+
+@pytest.mark.parametrize("code", ["Ocu", "ocu", " OCU "])
+def test_ocu_with_isbn_reports_whether_it_was_found(code):
+    """UC-08: Auch Ocu mit ISBN werden gekennzeichnet, unabhängig von der Schreibweise."""
+    notes = notes_for({"Titel+Zusatz": ["Gefunden", "Fehlt"],
+                       "ISBN": ["9781111111111", "9782222222222"],
+                       "BBG": [code, code]})
+    assert notes == [[2, "Gefunden", "Ocu: ISBN in der KBART gefunden, bitte prüfen"],
+                     [3, "Fehlt", "Ocu: ISBN nicht in der KBART gefunden"]]
+
+
+def test_regular_titles_and_blank_rows_get_no_note():
+    """Normale Titel und vollständig leere Excel-Zeilen erzeugen keinen Hinweis."""
+    notes = notes_for({"Titel+Zusatz": ["T", None], "ISBN": ["9781111111111", None],
+                       "BBG": ["Oau", None]})
+    assert notes == []
+
+
+def test_notes_work_without_title_and_bbg_columns():
+    """Titelliste ohne Titel- und BBG-Spalte führt nicht zum Abbruch."""
+    assert notes_for({"ISBN": [None], "PPN": ["1"]}) == [
+        [2, "", "Prüfen: leere ISBN, Ocu oder bestellt?"]]
+
+
 def test_serials_are_only_dropped_on_request():
     """Der Zeitschriftenfilter bleibt abschaltbar."""
     data = kbart(["Z", "", "9782222222222", "Serial"])

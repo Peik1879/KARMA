@@ -339,14 +339,16 @@ class KarmaApp(ctk.CTk):
 
         tiles = ctk.CTkFrame(area, fg_color="transparent")
         tiles.grid(row=0, column=0, sticky="ew", pady=(0, PAD))
-        tiles.grid_columnconfigure((0, 1, 2), weight=1, uniform="tiles")
+        tiles.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="tiles")
 
         self.tile_hits = StatTile(tiles, "Titel in der neuen KBART", OK_COLOR)
         self.tile_hits.grid(row=0, column=0, sticky="ew", padx=(0, 7))
         self.tile_missing = StatTile(tiles, "Titel der Liste ohne Treffer", WARN_COLOR)
         self.tile_missing.grid(row=0, column=1, sticky="ew", padx=7)
         self.tile_rate = StatTile(tiles, "Trefferquote der Titelliste")
-        self.tile_rate.grid(row=0, column=2, sticky="ew", padx=(7, 0))
+        self.tile_rate.grid(row=0, column=2, sticky="ew", padx=7)
+        self.tile_notes = StatTile(tiles, "Hinweise zur Titelliste", WARN_COLOR)
+        self.tile_notes.grid(row=0, column=3, sticky="ew", padx=(7, 0))
 
         self.tabs = ctk.CTkTabview(area, fg_color=SURFACE, corner_radius=6,
                                    segmented_button_selected_color=ACCENT,
@@ -354,11 +356,14 @@ class KarmaApp(ctk.CTk):
         self.tabs.grid(row=1, column=0, sticky="nsew")
         self.tabs.add("Gefundene Titel")
         self.tabs.add("Fehlende ISBN")
+        self.tabs.add("Hinweise")
 
         self.hits_tree = self._make_tree(self.tabs.tab("Gefundene Titel"),
                                          ("Titel", "Print-ISBN", "Online-ISBN", "Typ"))
         self.missing_tree = self._make_tree(self.tabs.tab("Fehlende ISBN"),
                                             ("Zeile", "ISBN aus der Titelliste"))
+        self.notes_tree = self._make_tree(self.tabs.tab("Hinweise"),
+                                          ("Zeile", "Titel", "Hinweis"))
 
         exports = ctk.CTkFrame(area, fg_color="transparent")
         exports.grid(row=2, column=0, sticky="ew", pady=(PAD, 0))
@@ -621,6 +626,7 @@ class KarmaApp(ctk.CTk):
         """
         treffer = ergebnis.filtered
         fehlend = ergebnis.missing
+        hinweise = ergebnis.notes
 
         self.progress.stop()
         self.progress.configure(mode="determinate")
@@ -630,6 +636,7 @@ class KarmaApp(ctk.CTk):
         self.result_df = treffer
         self.missing_df = fehlend
 
+        self.tile_notes.set_value(format_number(len(hinweise)))
         self.tile_hits.set_value(format_number(len(treffer)))
         self.tile_missing.set_value(format_number(len(fehlend)))
         self.tile_rate.set_value(f"{hit_rate(ergebnis):.1f} %".replace(".", ","))
@@ -648,13 +655,19 @@ class KarmaApp(ctk.CTk):
         for zeile in fehlend.head(PREVIEW_LIMIT).itertuples(index=False):
             self.missing_tree.insert("", "end", values=tuple(zeile))
 
+        self.notes_tree.delete(*self.notes_tree.get_children())
+        for zeile in hinweise.head(PREVIEW_LIMIT).itertuples(index=False):
+            self.notes_tree.insert("", "end", values=tuple(zeile))
+
         self.export_kbart_button.configure(state="normal" if len(treffer) else "disabled")
         self.export_missing_button.configure(state="normal" if len(fehlend) else "disabled")
 
         hinweis = ""
-        if len(treffer) > PREVIEW_LIMIT or len(fehlend) > PREVIEW_LIMIT:
-            hinweis = (f" Die Vorschau zeigt die ersten {PREVIEW_LIMIT} Zeilen, "
-                       "der Export enthält alle.")
+        if len(hinweise):
+            hinweis = f" Hinweise zur Titelliste: {format_number(len(hinweise))}."
+        if max(len(treffer), len(fehlend), len(hinweise)) > PREVIEW_LIMIT:
+            hinweis += (f" Die Vorschau zeigt die ersten {PREVIEW_LIMIT} Zeilen, "
+                        "der Export enthält alle.")
         self._set_status(
             f"Abgleich abgeschlossen \u00b7 {len(spalten)} KBART-Spalten übernommen."
             + hinweis, OK_COLOR)

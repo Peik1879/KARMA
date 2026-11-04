@@ -18,6 +18,16 @@ REQUIRED_KBART_COLUMNS = ("online_identifier", "print_identifier")
 # Spalten der Liste fehlender Titel (Format der bisherigen Berichte).
 MISSING_COLUMNS = ("Zeilennummer_Kaufdatei", "Nicht_gefundene_ISBNs")
 
+# Spalten der Hinweise zur Titelliste.
+NOTE_COLUMNS = ("Zeilennummer_Kaufdatei", "Titel", "Hinweis")
+
+# Bibliographische Gattung, die für Ocu steht (Spalte BBG im K10plus-Download).
+OCU_CODE = "ocu"
+
+EMPTY_ISBN_NOTE = "Prüfen: leere ISBN, Ocu oder bestellt?"
+OCU_FOUND_NOTE = "Ocu: ISBN in der KBART gefunden, bitte prüfen"
+OCU_MISSING_NOTE = "Ocu: ISBN nicht in der KBART gefunden"
+
 EMPTY_VALUES = {"", "0", "nan", "none", "<na>"}
 
 # Leerraum, Bindestrich, weiches Trennzeichen und typografische Striche
@@ -39,11 +49,13 @@ class CompareResult(NamedTuple):
         filtered (pd.DataFrame): KBART-Zeilen, die zur Titelliste passen.
         missing (pd.DataFrame): Zeilen der Titelliste ohne Treffer in der KBART.
         rows_with_isbn (int): Anzahl der Zeilen der Titelliste mit mindestens einer ISBN.
+        notes (pd.DataFrame): Zeilen der Titelliste, die geprüft werden sollten.
     """
 
     filtered: pd.DataFrame
     missing: pd.DataFrame
     rows_with_isbn: int
+    notes: pd.DataFrame
 
 
 def normalize_identifier(value):
@@ -131,6 +143,73 @@ def clean_float_identifier(value):
     return value
 
 
+def column_text(frame, keyword):
+    """
+    Liest die erste Spalte, deren Name das Stichwort enthält, als bereinigten Text.
+
+    Parameters:
+        frame (pd.DataFrame): Auszuwertende Tabelle.
+        keyword (str): Gesuchter Namensteil in Kleinbuchstaben.
+
+    Returns:
+        list: Ein Text je Zeile; leere Texte, wenn es keine passende Spalte gibt.
+    """
+    for name in frame.columns:
+        if keyword in str(name).lower():
+            return ["" if pd.isna(value) else str(value).strip() for value in frame[name]]
+    return [""] * len(frame)
+
+
+def purchase_note(isbns, code, kbart_isbns):
+    """
+    Bestimmt den Hinweis für eine Zeile der Titelliste.
+
+    Parameters:
+        isbns (list): Bereinigte ISBNs der Zeile.
+        code (str): Bibliographische Gattung aus der Spalte BBG.
+        kbart_isbns (set): Alle bereinigten Identifikatoren der KBART.
+
+    Returns:
+        str: Hinweistext oder ein leerer Text, wenn die Zeile unauffällig ist.
+    """
+    if not isbns:
+        return f"{EMPTY_ISBN_NOTE} (BBG: {code})" if code else EMPTY_ISBN_NOTE
+    if code.lower() == OCU_CODE:
+        return OCU_MISSING_NOTE if kbart_isbns.isdisjoint(isbns) else OCU_FOUND_NOTE
+    return ""
+
+
+def find_purchase_notes(purchase_df, isbn_columns, kbart_isbns):
+    """
+    Sucht Zeilen der Titelliste ohne ISBN sowie Ocu-Titel.
+
+    Leere ISBN-Felder werden über alle ISBN-Spalten geprüft, damit die Auswahl
+    einer einzelnen Spalte keine falschen Meldungen erzeugt. Vollständig leere
+    Zeilen bleiben unberücksichtigt.
+
+    Parameters:
+        purchase_df (pd.DataFrame): Eingelesene Titelliste.
+        isbn_columns (list): Für den Abgleich gewählte Spalten.
+        kbart_isbns (set): Alle bereinigten Identifikatoren der KBART.
+
+    Returns:
+        pd.DataFrame: Hinweise mit Excel-Zeile, Titel und Text.
+    """
+    check_columns = find_isbn_columns(purchase_df.columns) or isbn_columns
+    rows = row_identifiers(purchase_df, check_columns)
+    titles = column_text(purchase_df, "titel")
+    codes = column_text(purchase_df, "bbg")
+    filled = purchase_df.notna().any(axis=1)
+
+    notes = []
+    for position, (row, title, code, has_data) in enumerate(zip(rows, titles, codes, filled)):
+        note = purchase_note(row, code, kbart_isbns) if has_data else ""
+        if note:
+            # +2: Excel zählt ab 1 und die erste Zeile enthält die Überschriften.
+            notes.append((position + 2, title, note))
+    return pd.DataFrame(notes, columns=NOTE_COLUMNS)
+
+
 def compare_frames(kbart_df, purchase_df, isbn_columns, drop_serials=True):
     """
     Gleicht eine KBART-Tabelle gegen die ISBN-Spalten einer Titelliste ab.
@@ -145,7 +224,7 @@ def compare_frames(kbart_df, purchase_df, isbn_columns, drop_serials=True):
         drop_serials (bool): Zeitschriften vor dem Abgleich entfernen.
 
     Returns:
-        CompareResult: Treffer, fehlende Zeilen und Anzahl der geprüften Zeilen.
+        CompareResult: Treffer, fehlende Zeilen, Anzahl der geprüften Zeilen und Hinweise.
     """
     if drop_serials and "publication_type" in kbart_df.columns:
         kbart_df = kbart_df[kbart_df["publication_type"] != "Serial"]
@@ -172,7 +251,8 @@ def compare_frames(kbart_df, purchase_df, isbn_columns, drop_serials=True):
         columns=MISSING_COLUMNS,
     )
     rows_with_isbn = sum(1 for row in purchase_rows if row)
-    return CompareResult(filtered, missing, rows_with_isbn)
+    notes = find_purchase_notes(purchase_df, isbn_columns, kbart_isbns)
+    return CompareResult(filtered, missing, rows_with_isbn, notes)
 
 
 def hit_rate(result):

@@ -22,6 +22,8 @@ bestimmen, Abgleich starten, Ergebnis prüfen, exportieren.
 * Vor dem Speichern zeigt das Programm, **was** gefunden wurde: Trefferzahl,
   Anzahl der Titel ohne Entsprechung, Trefferquote und beide Listen als Tabelle.
   Fehlende Titel werden mit ihrer Zeilennummer in der Excel-Datei ausgegeben.
+* Der Reiter **Hinweise** nennt Zeilen ohne ISBN ("Prüfen: leere ISBN, Ocu oder bestellt?")
+  sowie Ocu-Titel, erkannt über die Spalte `BBG`. Entfernt wird dabei nichts.
 * Der Abgleich läuft in einem Hintergrund-Thread, das Fenster bleibt bedienbar.
 * Der Filter für Zeitschriften (`publication_type = Serial`) ist als Option sichtbar
   und abschaltbar.
@@ -61,5 +63,21 @@ python -m pytest
   Beispieldaten und läuft überall.
 * `tests/test_real_data.py` gleicht die echten Verlagslisten mit den erwarteten Ergebnissen ab.
 
-Die Tests mit echten Verlagslisten laufen nur, wenn die Dateien im Ordner `testdaten/` liegen.
+Die Tests mit echten Verlagslisten laufen nur, wenn die Dateien im Ordner `testdaten/` liegen. Startbar mit: python.exe -m pytest  
 Dieser Ordner wird nicht versioniert, ohne ihn werden diese Tests übersprungen.
+
+### Testdaten
+
+Die echten Listen liegen im UB-Wiki auf der Seite "Test Cases KARMA" und werden nicht
+in dieses öffentliche Repository hochgeladen, weil die Kaufdatei interne Bestandsdaten enthält.
+Für die Tests gehören sie mit unveränderten Namen nach `testdaten/`:
+
+* `Cambridge_einzeltitel_Stand_2026_09_02.xlsx` (Kaufdatei mit 286 Zeilen)
+* `Cambridge_einzeltitel_283.xlsx` (dieselbe Datei ohne die Zeilen 116, 147 und 264)
+* `CUP_Cambridge_Core_All_Books_2026-09-02.tsv`
+* `CUP_Cambridge_Core_-_Withdrawn_Books_2026-09-02.tsv`
+* `CUP_Cambridge_Core__All_Books_including_withdrawn_titles_2026-09-02.tsv`
+* `BiblioScout_Global_AllBooks.tsv`
+* `kbart_gefiltert_nurlaufendegeprüft.tsv`
+* `kbart_gefiltert_nurwithdrawngeprüft.tsv`
+* `kbart_gefiltert_laufendundwithdrawn.tsv`
