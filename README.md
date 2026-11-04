@@ -1,11 +1,13 @@
 # Abgleich mit KBART Datei
-Das Programm vergleicht KBART- mit Excel-Dateien anhand der E-ISBN bzw. Online Identifier. Mit Beenden des Abgleichs wird eine neue KBART erstellt, welche die Titel aus der Excel-Datei enthält.
+Das Programm vergleicht KBART- mit Excel-Dateien anhand der ISBNs (`print_identifier` und `online_identifier`). Mit Beenden des Abgleichs wird eine neue KBART erstellt, welche die Titel aus der Excel-Datei enthält.
 
 Es soll dazu dienen, aus einer großen Anzahl an Titeln in der KBART nur diejenigen auszuwählen, die in der Excel-Tabelle vorhanden sind und sie im KBART-Format bereitzustellen.
 
-Dafür wird die auszuwertende Spalte in der Excel-Datei ausgewählt, in welcher eine ISBN vorkommt.
+Dafür werden alle Spalten der Excel-Datei ausgewertet, die "ISBN" im Namen tragen.
 
-Sollte eine ISBN nicht in der KBART-, aber in der Excel-Datei vorhanden sein, werden diese als Fehler ausgegeben und können manuell überprüft werden.
+Sollte kein ISBN-Wert einer Excel-Zeile in der KBART vorhanden sein, wird die Zeile mit ihrer Zeilennummer ausgegeben und kann manuell überprüft werden.
+
+Stornierte Titel sollten vor dem Abgleich aus der Excel-Datei entfernt werden, da das Programm sie nicht erkennt und gefundene Titel sonst in die neue KBART übernimmt.
 
 Anwendungsbeispiele sind z.B. die Auswahl von EBS-Titeln, Pick&Choose Titeln oder Einzelkäufe von Bibliotheken
 
@@ -14,15 +16,22 @@ Anwendungsbeispiele sind z.B. die Auswahl von EBS-Titeln, Pick&Choose Titeln ode
 Der gesamte Ablauf findet in einem Fenster statt: beide Dateien auswählen, ISBN-Spalte
 bestimmen, Abgleich starten, Ergebnis prüfen, exportieren.
 
-* Die ISBN-Spalte wird über ihren **Namen** gewählt, nicht über eine Spaltennummer.
-  Eine Spalte mit "ISBN" im Namen wird automatisch vorgeschlagen, darunter erscheinen
-  Beispielwerte zur Kontrolle.
+* Alle Spalten mit "ISBN" im Namen werden automatisch ausgewertet, auch mehrere ISBNs
+  in einer Zelle (getrennt durch Semikolon). Eine einzelne Spalte bleibt wählbar,
+  darunter erscheinen Beispielwerte zur Kontrolle.
 * Vor dem Speichern zeigt das Programm, **was** gefunden wurde: Trefferzahl,
-  Anzahl der ISBN ohne Entsprechung, Trefferquote und beide Listen als Tabelle.
+  Anzahl der Titel ohne Entsprechung, Trefferquote und beide Listen als Tabelle.
+  Fehlende Titel werden mit ihrer Zeilennummer in der Excel-Datei ausgegeben.
 * Der Abgleich läuft in einem Hintergrund-Thread, das Fenster bleibt bedienbar.
 * Der Filter für Zeitschriften (`publication_type = Serial`) ist als Option sichtbar
   und abschaltbar.
 * Helles und dunkles Farbschema.
+
+## Aufbau
+
+* `kbart_gui.py`: Oberfläche und Programmstart.
+* `kbart_logic.py`: Einlesen, Bereinigen, Abgleichen und Schreiben, ohne Oberflächenbezug.
+* `tests/`: Automatische Tests der Auswertung.
 
 ## Installation
 
@@ -40,3 +49,17 @@ pyinstaller --onefile --windowed --hidden-import openpyxl --collect-all customtk
 
 Der Zusatz `--collect-all customtkinter` ist notwendig, weil PyInstaller die
 Theme-Dateien des Pakets sonst nicht mit einpackt und die fertige Datei beim Start abbricht.
+
+## Tests
+
+```
+pip install pytest
+python -m pytest
+```
+
+* `tests/test_kbart_logic.py` prüft Bereinigung, Abgleich, Einlesen und Schreiben mit kleinen
+  Beispieldaten und läuft überall.
+* `tests/test_real_data.py` gleicht die echten Verlagslisten mit den erwarteten Ergebnissen ab.
+
+Die Tests mit echten Verlagslisten laufen nur, wenn die Dateien im Ordner `testdaten/` liegen.
+Dieser Ordner wird nicht versioniert, ohne ihn werden diese Tests übersprungen.

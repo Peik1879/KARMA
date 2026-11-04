@@ -14,6 +14,7 @@ import queue
 import sys
 import threading
 import tkinter as tk
+import zipfile
 from tkinter import filedialog, ttk
 
 import pandas as pd
@@ -26,6 +27,17 @@ except ImportError as exc:  # pragma: no cover - nur ohne installierte Abhängig
         "Bitte installieren mit:  pip install -r requirements.txt\n"
     )
     raise SystemExit(1) from exc
+
+from kbart_logic import (
+    REQUIRED_KBART_COLUMNS,
+    compare_frames,
+    find_isbn_columns,
+    hit_rate,
+    load_kbart,
+    load_purchase,
+    row_identifiers,
+    write_tsv,
+)
 
 
 # --------------------------------------------------------------------------
@@ -51,9 +63,6 @@ PAD = 14
 # Ab dieser Zeilenzahl wird die Vorschau gekürzt; der Export bleibt vollständig.
 PREVIEW_LIMIT = 500
 
-# Spalten, die in der KBART-Datei für den Abgleich vorhanden sein müssen.
-REQUIRED_KBART_COLUMNS = ("online_identifier", "print_identifier")
-
 # Diese KBART-Spalten werden in der Trefferliste angezeigt, sofern vorhanden.
 PREVIEW_COLUMNS = (
     "publication_title",
@@ -65,70 +74,8 @@ PREVIEW_COLUMNS = (
 
 
 # --------------------------------------------------------------------------
-# Auswertung (ohne Oberflächenbezug, dadurch einzeln testbar)
+# Anzeigehilfen
 # --------------------------------------------------------------------------
-
-def normalize_isbn(series):
-    """
-    Normalisiert ISBN-Werte und entfernt ungültige Einträge.
-
-    Parameters:
-        series (pd.Series): Serie mit ISBN-Werten.
-
-    Returns:
-        pd.Series: Serie mit bereinigten ISBNs ohne Leer- und Nullwerte.
-    """
-    return (
-        series.astype(str)
-        .str.replace("-", "", regex=False)
-        .str.replace(".0", "", regex=False)
-        .str.strip()
-        .replace("nan", pd.NA)
-        .replace("0", pd.NA)
-        .replace("", pd.NA)
-        .dropna()
-    )
-
-
-def compare_frames(kbart_df, purchase_df, isbn_column, drop_serials=True):
-    """
-    Gleicht eine KBART-Tabelle gegen die ISBN-Spalte einer Titelliste ab.
-
-    Parameters:
-        kbart_df (pd.DataFrame): Eingelesene KBART-Datei.
-        purchase_df (pd.DataFrame): Eingelesene Titelliste.
-        isbn_column (str): Name der auszuwertenden Spalte in der Titelliste.
-        drop_serials (bool): Zeitschriften vor dem Abgleich entfernen.
-
-    Returns:
-        tuple: (gefilterte KBART als DataFrame, Liste der fehlenden ISBNs)
-    """
-    if drop_serials and "publication_type" in kbart_df.columns:
-        kbart_df = kbart_df[kbart_df["publication_type"] != "Serial"]
-
-    purchase_isbns = normalize_isbn(purchase_df[isbn_column])
-
-    online_isbns = normalize_isbn(kbart_df["online_identifier"])
-    print_isbns = normalize_isbn(kbart_df["print_identifier"])
-    kbart_isbns = set(online_isbns.unique()).union(set(print_isbns.unique()))
-
-    online_matches = normalize_isbn(kbart_df["online_identifier"]).isin(
-        purchase_isbns).reindex(kbart_df.index, fill_value=False)
-    print_matches = normalize_isbn(kbart_df["print_identifier"]).isin(
-        purchase_isbns).reindex(kbart_df.index, fill_value=False)
-    filtered = kbart_df[online_matches | print_matches].copy()
-
-    for column in REQUIRED_KBART_COLUMNS:
-        filtered[column] = filtered[column].astype("string").str.replace(
-            ".0", "", regex=False)
-
-    missing = [
-        str(isbn)
-        for isbn in purchase_isbns[~purchase_isbns.isin(kbart_isbns)].tolist()
-        if str(isbn) not in ("nan", "0", "")
-    ]
-    return filtered, missing
-
 
 def format_number(value):
     """
@@ -145,7 +92,7 @@ def format_number(value):
 
 def display_value(value):
     """Formatiert leere Tabellenwerte als gut lesbaren Platzhalter."""
-    if pd.isna(value):
+    if pd.isna(value) or value == "":
         return "-"
     return str(value)
 
@@ -169,23 +116,6 @@ def human_size(path):
             return f"{size:.0f} {unit}".replace(".", ",")
         size /= 1024
     return f"{size:.0f} GB"
-
-
-def guess_isbn_column(columns):
-    """
-    Schlägt anhand der Spaltennamen eine ISBN-Spalte vor.
-
-    Parameters:
-        columns (list): Liste der Spaltennamen.
-
-    Returns:
-        str: Der wahrscheinlichste Spaltenname oder der erste Eintrag.
-    """
-    for keyword in ("e-isbn", "eisbn", "online_identifier", "isbn"):
-        for name in columns:
-            if keyword in str(name).lower():
-                return name
-    return columns[0] if columns else ""
 
 
 # --------------------------------------------------------------------------
@@ -296,7 +226,9 @@ class KarmaApp(ctk.CTk):
         self.kbart_df = None
         self.purchase_df = None
         self.result_df = None
-        self.missing = []
+        self.missing_df = None
+        self.isbn_columns = []
+        self.all_columns_label = ""
         self.events = queue.Queue()
 
         self.grid_columnconfigure(0, weight=1)
@@ -358,7 +290,7 @@ class KarmaApp(ctk.CTk):
         box.grid(row=2, column=0, sticky="ew", padx=PAD, pady=PAD)
         box.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(box, text="3 \u00b7 ISBN-Spalte der Titelliste", anchor="w",
+        ctk.CTkLabel(box, text="3 \u00b7 ISBN-Spalten der Titelliste", anchor="w",
                      font=ctk.CTkFont(size=13, weight="bold")).grid(
                          row=0, column=0, columnspan=2, sticky="ew",
                          padx=PAD, pady=(PAD, 8))
@@ -411,7 +343,7 @@ class KarmaApp(ctk.CTk):
 
         self.tile_hits = StatTile(tiles, "Titel in der neuen KBART", OK_COLOR)
         self.tile_hits.grid(row=0, column=0, sticky="ew", padx=(0, 7))
-        self.tile_missing = StatTile(tiles, "ISBN ohne Treffer", WARN_COLOR)
+        self.tile_missing = StatTile(tiles, "Titel der Liste ohne Treffer", WARN_COLOR)
         self.tile_missing.grid(row=0, column=1, sticky="ew", padx=7)
         self.tile_rate = StatTile(tiles, "Trefferquote der Titelliste")
         self.tile_rate.grid(row=0, column=2, sticky="ew", padx=(7, 0))
@@ -426,7 +358,7 @@ class KarmaApp(ctk.CTk):
         self.hits_tree = self._make_tree(self.tabs.tab("Gefundene Titel"),
                                          ("Titel", "Print-ISBN", "Online-ISBN", "Typ"))
         self.missing_tree = self._make_tree(self.tabs.tab("Fehlende ISBN"),
-                                            ("#", "ISBN aus der Titelliste"))
+                                            ("Zeile", "ISBN aus der Titelliste"))
 
         exports = ctk.CTkFrame(area, fg_color="transparent")
         exports.grid(row=2, column=0, sticky="ew", pady=(PAD, 0))
@@ -469,7 +401,7 @@ class KarmaApp(ctk.CTk):
                             selectmode="browse", style="Karma.Treeview")
         for name in columns:
             tree.heading(name, text=name)
-            width = 90 if name in ("#", "Typ") else 240
+            width = 90 if name in ("Zeile", "Typ") else 240
             tree.column(name, width=width, anchor="w", stretch=True)
 
         scroll = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
@@ -522,12 +454,14 @@ class KarmaApp(ctk.CTk):
         if not path:
             return
         try:
-            frame = pd.read_csv(path, sep="\t", dtype=str)
+            frame = load_kbart(path)
         except (OSError, UnicodeDecodeError, pd.errors.ParserError,
                 pd.errors.EmptyDataError) as error:
             self.kbart_card.set_file(os.path.basename(path),
                                      f"Konnte nicht gelesen werden: {error}", ok=False)
             self._set_status("Die KBART-Datei konnte nicht geladen werden.", ERROR_COLOR)
+            self.kbart_df = None
+            self._refresh_start_state()
             return
 
         fehlend = [c for c in REQUIRED_KBART_COLUMNS if c not in frame.columns]
@@ -558,16 +492,20 @@ class KarmaApp(ctk.CTk):
         if not path:
             return
         try:
-            frame = pd.read_excel(path)
-        except (OSError, ValueError, KeyError) as error:
+            frame = load_purchase(path)
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile) as error:
             self.purchase_card.set_file(os.path.basename(path),
                                         f"Konnte nicht gelesen werden: {error}", ok=False)
             self._set_status("Die Titelliste konnte nicht geladen werden.", ERROR_COLOR)
+            self.purchase_df = None
+            self._refresh_start_state()
             return
 
         if frame.empty or frame.columns.empty:
             self.purchase_card.set_file(os.path.basename(path),
                                         "Die Datei enthält keine Daten.", ok=False)
+            self.purchase_df = None
+            self._refresh_start_state()
             return
 
         self.purchase_path = path
@@ -577,24 +515,37 @@ class KarmaApp(ctk.CTk):
             f"{format_number(len(frame))} Zeilen \u00b7 {len(frame.columns)} Spalten "
             f"\u00b7 {human_size(path)}")
 
-        spalten = [str(c) for c in frame.columns]
-        vorschlag = guess_isbn_column(spalten)
-        self.column_menu.configure(values=spalten, state="normal")
-        self.column_menu.set(vorschlag)
-        self._on_column_change(vorschlag)
-        self._set_status("Titelliste geladen. Bitte ISBN-Spalte prüfen.")
+        spalten = list(frame.columns)
+        self.isbn_columns = find_isbn_columns(spalten)
+        self.all_columns_label = f"Alle ISBN-Spalten ({len(self.isbn_columns)})"
+        auswahl = [self.all_columns_label] + spalten if self.isbn_columns else spalten
+        self.column_menu.configure(values=auswahl, state="normal")
+        self.column_menu.set(auswahl[0])
+        self._on_column_change(auswahl[0])
+        self._set_status("Titelliste geladen. Bitte ISBN-Spalten prüfen.")
         self._refresh_start_state()
 
-    def _on_column_change(self, column):
+    def _selected_columns(self):
         """
-        Zeigt Beispielwerte der gewählten Spalte an.
+        Ermittelt die Spalten, die zur aktuellen Auswahl gehören.
+
+        Returns:
+            list: Auszuwertende Spalten der Titelliste.
+        """
+        auswahl = self.column_menu.get()
+        return self.isbn_columns if auswahl == self.all_columns_label else [auswahl]
+
+    def _on_column_change(self, _choice):
+        """
+        Zeigt Beispielwerte der gewählten Spalten an.
 
         Parameters:
-            column (str): Name der gewählten Spalte.
+            _choice (str): Gewählter Menüeintrag.
         """
-        if self.purchase_df is None or column not in [str(c) for c in self.purchase_df.columns]:
+        if self.purchase_df is None:
             return
-        werte = normalize_isbn(self.purchase_df[column]).head(3).tolist()
+        zeilen = row_identifiers(self.purchase_df, self._selected_columns())
+        werte = [isbn for zeile in zeilen for isbn in zeile][:3]
         if werte:
             self.preview_label.configure(
                 text="Beispiele: " + ", ".join(werte), text_color=TEXT_DIM)
@@ -621,27 +572,28 @@ class KarmaApp(ctk.CTk):
         self.progress.start()
         self._set_status("Die Dateien werden verglichen \u2026")
 
-        column = self.column_menu.get()
+        columns = self._selected_columns()
         drop_serials = bool(self.serial_check.get())
 
         thread = threading.Thread(target=self._worker,
-                                  args=(column, drop_serials), daemon=True)
+                                  args=(columns, drop_serials), daemon=True)
         thread.start()
 
-    def _worker(self, column, drop_serials):
+    def _worker(self, columns, drop_serials):
         """
         Fuehrt den Abgleich aus und meldet das Ergebnis über die Queue.
 
         Parameters:
-            column (str): Name der ISBN-Spalte.
+            columns (list): Auszuwertende ISBN-Spalten.
             drop_serials (bool): Zeitschriften entfernen.
         """
         try:
-            treffer, fehlend = compare_frames(self.kbart_df, self.purchase_df,
-                                              column, drop_serials)
-            self.events.put(("done", (treffer, fehlend)))
-        except (KeyError, ValueError, TypeError) as error:  # pragma: no cover
-            self.events.put(("error", str(error)))
+            ergebnis = compare_frames(self.kbart_df, self.purchase_df,
+                                      columns, drop_serials)
+            self.events.put(("done", ergebnis))
+        # Jeder Fehler muss die Oberfläche erreichen, sonst bleibt sie im Wartezustand.
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            self.events.put(("error", f"{type(error).__name__}: {error}"))
 
     def _poll_events(self):
         """Holt Meldungen aus dem Hintergrund-Thread und aktualisiert die Oberfläche."""
@@ -649,9 +601,10 @@ class KarmaApp(ctk.CTk):
             while True:
                 art, nutzlast = self.events.get_nowait()
                 if art == "done":
-                    self._show_results(*nutzlast)
+                    self._show_results(nutzlast)
                 elif art == "error":
                     self.progress.stop()
+                    self.progress.configure(mode="determinate")
                     self.progress.set(0)
                     self.start_button.configure(state="normal", text="Abgleich starten")
                     self._set_status(f"Abbruch: {nutzlast}", ERROR_COLOR)
@@ -659,27 +612,27 @@ class KarmaApp(ctk.CTk):
             pass
         self.after(120, self._poll_events)
 
-    def _show_results(self, treffer, fehlend):
+    def _show_results(self, ergebnis):
         """
         Stellt das Ergebnis in Kennzahlen und Tabellen dar.
 
         Parameters:
-            treffer (pd.DataFrame): Gefilterte KBART-Zeilen.
-            fehlend (list): ISBN ohne Entsprechung in der KBART.
+            ergebnis (CompareResult): Ergebnis des Abgleichs.
         """
+        treffer = ergebnis.filtered
+        fehlend = ergebnis.missing
+
         self.progress.stop()
         self.progress.configure(mode="determinate")
         self.progress.set(1)
         self.start_button.configure(state="normal", text="Abgleich starten")
 
         self.result_df = treffer
-        self.missing = fehlend
+        self.missing_df = fehlend
 
-        gesamtzahl = len(treffer) + len(fehlend)
-        quote = (len(treffer) / gesamtzahl * 100) if gesamtzahl else 0
         self.tile_hits.set_value(format_number(len(treffer)))
         self.tile_missing.set_value(format_number(len(fehlend)))
-        self.tile_rate.set_value(f"{quote:.1f} %".replace(".", ","))
+        self.tile_rate.set_value(f"{hit_rate(ergebnis):.1f} %".replace(".", ","))
 
         self.hits_tree.delete(*self.hits_tree.get_children())
         spalten = [c for c in PREVIEW_COLUMNS if c in treffer.columns]
@@ -692,11 +645,11 @@ class KarmaApp(ctk.CTk):
             ))
 
         self.missing_tree.delete(*self.missing_tree.get_children())
-        for nummer, isbn in enumerate(fehlend[:PREVIEW_LIMIT], start=1):
-            self.missing_tree.insert("", "end", values=(nummer, isbn))
+        for zeile in fehlend.head(PREVIEW_LIMIT).itertuples(index=False):
+            self.missing_tree.insert("", "end", values=tuple(zeile))
 
         self.export_kbart_button.configure(state="normal" if len(treffer) else "disabled")
-        self.export_missing_button.configure(state="normal" if fehlend else "disabled")
+        self.export_missing_button.configure(state="normal" if len(fehlend) else "disabled")
 
         hinweis = ""
         if len(treffer) > PREVIEW_LIMIT or len(fehlend) > PREVIEW_LIMIT:
@@ -714,28 +667,29 @@ class KarmaApp(ctk.CTk):
             return
         pfad = filedialog.asksaveasfilename(
             defaultextension=".tsv", filetypes=[("KBART / TSV", "*.tsv")],
+            initialfile="kbart_gefiltert.tsv",
             title="Neue KBART-Datei speichern")
         if not pfad:
             return
         try:
-            self.result_df.to_csv(pfad, sep="\t", index=False, encoding="utf-8")
+            write_tsv(self.result_df, pfad)
         except OSError as error:
             self._set_status(f"Speichern fehlgeschlagen: {error}", ERROR_COLOR)
             return
         self._set_status(f"Gespeichert: {pfad}", OK_COLOR)
 
     def _export_missing(self):
-        """Speichert die Liste der ISBN ohne Treffer."""
-        if not self.missing:
+        """Speichert die Zeilen der Titelliste ohne Treffer."""
+        if self.missing_df is None or self.missing_df.empty:
             return
         pfad = filedialog.asksaveasfilename(
-            defaultextension=".txt", filetypes=[("Textdatei", "*.txt")],
+            defaultextension=".tsv", filetypes=[("TSV", "*.tsv")],
+            initialfile="fehlende_ISBNS.tsv",
             title="Fehlende ISBN speichern")
         if not pfad:
             return
         try:
-            with open(pfad, "w", encoding="utf-8") as datei:
-                datei.write("\n".join(self.missing))
+            write_tsv(self.missing_df, pfad)
         except OSError as error:
             self._set_status(f"Speichern fehlgeschlagen: {error}", ERROR_COLOR)
             return
